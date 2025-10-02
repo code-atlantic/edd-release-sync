@@ -1,0 +1,129 @@
+name: 'EDD Release Sync'
+description: 'Sync WordPress plugin releases to Easy Digital Downloads via webhook'
+author: 'Code Atlantic'
+
+branding:
+  icon: 'send'
+  color: 'blue'
+
+inputs:
+  # Required inputs
+  edd_id:
+    description: 'EDD Download/Product ID'
+    required: true
+  version:
+    description: 'Release version (e.g., 1.2.3)'
+    required: true
+  release_url:
+    description: 'GitHub release URL'
+    required: true
+  download_url:
+    description: 'Browser download URL for release package (required for file processing and customer downloads)'
+    required: true
+  asset_api_url:
+    description: 'GitHub API asset URL (required for Git Updater dropdown compatibility - use API format, not browser URL)'
+    required: true
+  webhook_url:
+    description: 'EDD Release Manager webhook endpoint URL'
+    required: true
+  webhook_token:
+    description: 'Bearer token for webhook authentication'
+    required: true
+
+  # Optional inputs
+  plugin_slug:
+    description: 'Plugin slug (fallback identifier if edd_id is invalid)'
+    required: false
+  readme_url:
+    description: 'README URL (reserved for future use)'
+    required: false
+  test_mode:
+    description: 'Enable test mode (validates without updating product)'
+    required: false
+    default: 'false'
+
+outputs:
+  status:
+    description: 'Webhook delivery status (success/failed)'
+    value: ${{ steps.webhook.outputs.status }}
+  http_code:
+    description: 'HTTP response code from webhook'
+    value: ${{ steps.webhook.outputs.http_code }}
+  response:
+    description: 'Response body from webhook'
+    value: ${{ steps.webhook.outputs.response }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Send EDD Release Webhook
+      id: webhook
+      shell: bash
+      run: |
+        echo "📡 Sending webhook to EDD Release Manager..."
+        echo "   EDD ID: ${{ inputs.edd_id }}"
+        echo "   Version: ${{ inputs.version }}"
+        echo "   Test Mode: ${{ inputs.test_mode }}"
+
+        # Build JSON payload with all required fields
+        PAYLOAD=$(jq -n \
+          --arg edd_id "${{ inputs.edd_id }}" \
+          --arg version "${{ inputs.version }}" \
+          --arg release_url "${{ inputs.release_url }}" \
+          --arg download_url "${{ inputs.download_url }}" \
+          --arg asset_api_url "${{ inputs.asset_api_url }}" \
+          '{
+            edd_id: ($edd_id | tonumber),
+            version: $version,
+            release_url: $release_url,
+            download_url: $download_url,
+            asset_api_url: $asset_api_url
+          }')
+
+        # Add optional fields if provided
+        if [ -n "${{ inputs.plugin_slug }}" ]; then
+          PAYLOAD=$(echo "$PAYLOAD" | jq --arg val "${{ inputs.plugin_slug }}" '. + {plugin: $val}')
+        fi
+
+        if [ -n "${{ inputs.readme_url }}" ]; then
+          PAYLOAD=$(echo "$PAYLOAD" | jq --arg val "${{ inputs.readme_url }}" '. + {readme_url: $val}')
+        fi
+
+        if [ "${{ inputs.test_mode }}" = "true" ]; then
+          PAYLOAD=$(echo "$PAYLOAD" | jq '. + {test_mode: true}')
+        fi
+
+        echo "Payload:"
+        echo "$PAYLOAD" | jq '.'
+
+        # Send webhook with error handling
+        RESPONSE=$(curl -X POST "${{ inputs.webhook_url }}" \
+          -H "Content-Type: application/json" \
+          -H "Authorization: Bearer ${{ inputs.webhook_token }}" \
+          -d "$PAYLOAD" \
+          -w "\nHTTP_CODE:%{http_code}" \
+          -s)
+
+        # Extract HTTP code and body
+        HTTP_CODE=$(echo "$RESPONSE" | grep "HTTP_CODE:" | cut -d':' -f2)
+        BODY=$(echo "$RESPONSE" | sed '/HTTP_CODE:/d')
+
+        # Set outputs
+        echo "http_code=$HTTP_CODE" >> $GITHUB_OUTPUT
+        {
+          echo "response<<EOF"
+          echo "$BODY"
+          echo "EOF"
+        } >> $GITHUB_OUTPUT
+
+        # Check success
+        if [ "$HTTP_CODE" = "200" ]; then
+          echo "status=success" >> $GITHUB_OUTPUT
+          echo "✅ Webhook delivered successfully"
+          echo "$BODY" | jq '.' 2>/dev/null || echo "$BODY"
+        else
+          echo "status=failed" >> $GITHUB_OUTPUT
+          echo "❌ Webhook failed with HTTP $HTTP_CODE"
+          echo "$BODY" | jq '.' 2>/dev/null || echo "$BODY"
+          exit 1
+        fi
