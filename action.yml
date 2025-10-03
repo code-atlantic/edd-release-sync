@@ -1,61 +1,112 @@
-name: 'EDD Release Sync'
-description: 'Sync WordPress plugin releases to Easy Digital Downloads via webhook'
-author: 'Code Atlantic'
+name: "EDD Release Sync"
+description: "Sync WordPress plugin releases to Easy Digital Downloads via webhook"
+author: "Code Atlantic"
 
 branding:
-  icon: 'send'
-  color: 'blue'
+  icon: "send"
+  color: "blue"
 
 inputs:
   # Required inputs
   edd_id:
-    description: 'EDD Download/Product ID'
+    description: "EDD Download/Product ID"
     required: true
   version:
-    description: 'Release version (e.g., 1.2.3)'
+    description: "Release version (e.g., 1.2.3)"
     required: true
   release_url:
-    description: 'GitHub release URL'
+    description: "GitHub release URL"
     required: true
   download_url:
-    description: 'Browser download URL for release package (required for file processing and customer downloads)'
+    description: "Browser download URL for release package (required for file processing and customer downloads)"
     required: true
   asset_api_url:
-    description: 'GitHub API asset URL (required for Git Updater dropdown compatibility - use API format, not browser URL)'
+    description: "GitHub API asset URL (required for Git Updater dropdown compatibility - use API format, not browser URL)"
     required: true
   webhook_url:
-    description: 'EDD Release Manager webhook endpoint URL'
+    description: "EDD Release Manager webhook endpoint URL"
     required: true
   webhook_token:
-    description: 'Bearer token for webhook authentication'
+    description: "Bearer token for webhook authentication"
     required: true
 
   # Optional inputs
   plugin_slug:
-    description: 'Plugin slug (fallback identifier if edd_id is invalid)'
+    description: "Plugin slug (fallback identifier if edd_id is invalid)"
     required: false
   readme_url:
-    description: 'README URL (reserved for future use)'
+    description: "README URL (reserved for future use)"
+    required: false
+  is_prerelease:
+    description: "Is this a pre-release (beta/alpha/rc)"
+    required: false
+    default: "false"
+  changelog:
+    description: "Changelog content (auto-detects from CHANGELOG.md or readme.txt if not provided)"
     required: false
   test_mode:
-    description: 'Enable test mode (validates without updating product)'
+    description: "Enable test mode (validates without updating product)"
     required: false
-    default: 'false'
+    default: "false"
 
 outputs:
   status:
-    description: 'Webhook delivery status (success/failed)'
+    description: "Webhook delivery status (success/failed)"
     value: ${{ steps.webhook.outputs.status }}
   http_code:
-    description: 'HTTP response code from webhook'
+    description: "HTTP response code from webhook"
     value: ${{ steps.webhook.outputs.http_code }}
   response:
-    description: 'Response body from webhook'
+    description: "Response body from webhook"
     value: ${{ steps.webhook.outputs.response }}
 
 runs:
-  using: 'composite'
+  using: "composite"
   steps:
+    - name: Extract Changelog
+      id: changelog
+      shell: bash
+      run: |
+        # Use provided changelog or auto-detect
+        if [ -n "${{ inputs.changelog }}" ]; then
+          CHANGELOG="${{ inputs.changelog }}"
+          echo "📝 Using provided changelog"
+        else
+          echo "🔍 Auto-detecting changelog..."
+          VERSION="${{ inputs.version }}"
+          VERSION="${VERSION#v}"  # Strip 'v' prefix
+
+          CHANGELOG=""
+
+          # Priority 1: CHANGELOG.md
+          if [ -f "CHANGELOG.md" ]; then
+            echo "   Checking CHANGELOG.md..."
+            # Match various header formats: ## [2.0.0], ## 2.0.0, ## Version 2.0.0, ## v2.0.0
+            CHANGELOG=$(sed -n "/^##.*${VERSION}/,/^## /p" CHANGELOG.md | sed '1d;$d' | sed '/^$/d')
+          fi
+
+          # Priority 2: readme.txt (WordPress format)
+          if [ -z "$CHANGELOG" ] && [ -f "readme.txt" ]; then
+            echo "   Checking readme.txt..."
+            # Extract from == Changelog == section
+            CHANGELOG=$(awk '/^== Changelog ==/,/^== / {print}' readme.txt | \
+                        sed -n "/^= ${VERSION}/,/^= /p" | sed '1d;$d' | sed '/^$/d')
+          fi
+
+          if [ -n "$CHANGELOG" ]; then
+            echo "   ✅ Changelog extracted successfully"
+          else
+            echo "   ⚠️ No changelog found for version ${VERSION}"
+          fi
+        fi
+
+        # Output for next step (handle multiline)
+        {
+          echo 'content<<EOF'
+          echo "$CHANGELOG"
+          echo 'EOF'
+        } >> $GITHUB_OUTPUT
+
     - name: Send EDD Release Webhook
       id: webhook
       shell: bash
@@ -63,6 +114,7 @@ runs:
         echo "📡 Sending webhook to EDD Release Manager..."
         echo "   EDD ID: ${{ inputs.edd_id }}"
         echo "   Version: ${{ inputs.version }}"
+        echo "   Pre-release: ${{ inputs.is_prerelease }}"
         echo "   Test Mode: ${{ inputs.test_mode }}"
 
         # Build JSON payload with all required fields
@@ -87,6 +139,18 @@ runs:
 
         if [ -n "${{ inputs.readme_url }}" ]; then
           PAYLOAD=$(echo "$PAYLOAD" | jq --arg val "${{ inputs.readme_url }}" '. + {readme_url: $val}')
+        fi
+
+        # Add pre-release flag
+        if [ "${{ inputs.is_prerelease }}" = "true" ]; then
+          PAYLOAD=$(echo "$PAYLOAD" | jq '. + {is_prerelease: true}')
+        else
+          PAYLOAD=$(echo "$PAYLOAD" | jq '. + {is_prerelease: false}')
+        fi
+
+        # Add changelog if extracted
+        if [ -n "${{ steps.changelog.outputs.content }}" ]; then
+          PAYLOAD=$(echo "$PAYLOAD" | jq --arg val "${{ steps.changelog.outputs.content }}" '. + {changelog: $val}')
         fi
 
         if [ "${{ inputs.test_mode }}" = "true" ]; then

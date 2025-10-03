@@ -112,7 +112,9 @@ jobs:
 |-------|-------------|---------|
 | `plugin_slug` | Plugin slug (fallback if `edd_id` invalid) | - |
 | `readme_url` | README URL (reserved for future use) | - |
-| `test_mode` | Test without updating | `false` |
+| `is_prerelease` | Is this a pre-release (beta/alpha/rc) | `false` |
+| `changelog` | Changelog content (auto-detects from CHANGELOG.md or readme.txt) | Auto-detect |
+| `test_mode` | Creates version in EDD but doesn't update download URL | `false` |
 
 ## Outputs
 
@@ -156,6 +158,81 @@ https://api.github.com/repos/user/repo/releases/assets/12345
 
 ## Advanced Usage
 
+### Pre-Release Support (Beta/Alpha)
+
+The action supports pre-releases with automatic beta version management in EDD Software Licensing:
+
+```yaml
+- name: Detect pre-release
+  id: prerelease
+  run: |
+    if [[ "${{ github.ref_name }}" =~ -beta|-alpha ]]; then
+      echo "is_prerelease=true" >> $GITHUB_OUTPUT
+    else
+      echo "is_prerelease=false" >> $GITHUB_OUTPUT
+    fi
+
+- name: Sync to EDD
+  uses: code-atlantic/edd-release-sync@v1
+  with:
+    edd_id: ${{ secrets.EDD_PRODUCT_ID }}
+    version: ${{ github.ref_name }}
+    release_url: ${{ steps.release.outputs.url }}
+    download_url: ${{ steps.release.outputs.download_url }}
+    asset_api_url: ${{ steps.asset.outputs.url }}
+    webhook_url: ${{ secrets.EDD_WEBHOOK_URL }}
+    webhook_token: ${{ secrets.EDD_WEBHOOK_TOKEN }}
+    is_prerelease: '${{ steps.prerelease.outputs.is_prerelease }}'
+```
+
+**What happens for pre-releases:**
+- ✅ **Enables beta version** in EDD Software Licensing metabox
+- ✅ **Sets beta version** number (e.g., "2.0.0-beta.1")
+- ✅ **Uploads beta file** for users opted into beta updates
+- ✅ **Separate beta changelog** (extracted from CHANGELOG.md or readme.txt)
+- ✅ **Version validation** (ensures beta > stable before enabling)
+
+### Automatic Changelog Detection
+
+The action automatically extracts changelog content from your repository:
+
+**Priority Order:**
+1. Manual `changelog` input (if provided)
+2. `CHANGELOG.md` - Looks for version-specific section
+3. `readme.txt` - Extracts from WordPress changelog section
+4. Empty (logs warning, uses GitHub release body as fallback)
+
+**Supported CHANGELOG.md formats:**
+```markdown
+## [2.0.0] - 2025-10-02
+## 2.0.0
+## Version 2.0.0
+## v2.0.0
+```
+
+**Supported readme.txt format:**
+```
+== Changelog ==
+
+= 2.0.0 =
+* Feature: New awesome feature
+* Fix: Bug fix description
+```
+
+**Manual override:**
+```yaml
+- name: Sync with custom changelog
+  uses: code-atlantic/edd-release-sync@v1
+  with:
+    edd_id: ${{ secrets.EDD_PRODUCT_ID }}
+    version: '1.2.3'
+    changelog: |
+      ## What's New
+      - Added feature X
+      - Fixed bug Y
+    # ... other required inputs
+```
+
 ### Getting Asset API URLs
 
 Use GitHub CLI to get the correct API URL for your release asset:
@@ -180,7 +257,7 @@ Use GitHub CLI to get the correct API URL for your release asset:
 
 ### Test Mode
 
-Test webhook connectivity without updating your product:
+Test webhook connectivity and version creation without updating GitHub download settings:
 
 ```yaml
 - name: Test webhook
@@ -195,6 +272,19 @@ Test webhook connectivity without updating your product:
     webhook_token: ${{ secrets.EDD_WEBHOOK_TOKEN }}
     test_mode: 'true'
 ```
+
+**What test_mode does:**
+- ✅ **Creates version** in EDD Software Licensing (version number visible in EDD)
+- ✅ **Logs activity** in Release Manager activity log
+- ✅ **Validates webhook** authentication and connectivity
+- ❌ **Does NOT update** GitHub Update Settings metabox (download URL remains unchanged)
+- ❌ **Does NOT affect** customer downloads (they still get the old version)
+
+**Use test_mode to:**
+- Verify webhook authentication is working
+- Test version creation in EDD SL
+- Validate the complete flow without affecting production downloads
+- Debug connectivity issues safely
 
 ### With Error Handling
 
