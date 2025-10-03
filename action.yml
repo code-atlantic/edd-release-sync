@@ -82,15 +82,16 @@ runs:
           if [ -f "CHANGELOG.md" ]; then
             echo "   Checking CHANGELOG.md..."
             # Match various header formats: ## [2.0.0], ## 2.0.0, ## Version 2.0.0, ## v2.0.0
-            CHANGELOG=$(sed -n "/^##.*${VERSION}/,/^## /p" CHANGELOG.md | sed '1d;$d' | sed '/^$/d')
+            # Stop at next version heading (## v or ## [v) for efficiency
+            CHANGELOG=$(sed -n "/^##.*${VERSION}/,/^## \(v\|\[\)/p" CHANGELOG.md | sed '1d;$d' | sed '/^$/d')
           fi
 
           # Priority 2: readme.txt (WordPress format)
           if [ -z "$CHANGELOG" ] && [ -f "readme.txt" ]; then
             echo "   Checking readme.txt..."
-            # Extract from == Changelog == section
+            # Extract from == Changelog == section, stop at next version (= v)
             CHANGELOG=$(awk '/^== Changelog ==/,/^== / {print}' readme.txt | \
-                        sed -n "/^= ${VERSION}/,/^= /p" | sed '1d;$d' | sed '/^$/d')
+                        sed -n "/^= ${VERSION}/,/^= v/p" | sed '1d;$d' | sed '/^$/d')
           fi
 
           if [ -n "$CHANGELOG" ]; then
